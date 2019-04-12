@@ -1,0 +1,24 @@
+[package]
+authors = ["eV <ev@7pr.xyz>"]
+name = "yodel"
+version = "0.1.0"
+
+[dependencies]
+strobe-rs = "0.3.4"
+
+[dependencies.curve25519-dalek]
+default-features = false
+version = "0.21.0"
+
+[dependencies.rand]
+default-features = false
+version = "0.5.5"
+
+[features]
+nightly = ["curve25519-dalek/nightly"]
+default = ["std", "u32_backend"]
+std = ["alloc", "curve25519-dalek/std"]
+alloc = ["curve25519-dalek/alloc"]
+u32_backend = ["curve25519-dalek/u32_backend"]
+u64_backend = ["curve25519-dalek/u64_backend"]
+avx2_backend = ["curve25519-dalek/avx2_backend"]
