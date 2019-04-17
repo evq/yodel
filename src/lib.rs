@@ -13,8 +13,9 @@ use strobe_rs::Strobe;
 
 #[cfg(test)]
 mod tests {
-    use rand_core::rngs::OsRng;
+    extern crate rand;
     use strobe_rs::SecParam;
+    use tests::rand::rngs::OsRng;
 
     use *;
 

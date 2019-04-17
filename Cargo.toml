@@ -5,14 +5,11 @@ version = "0.1.0"
 
 [dependencies]
 strobe-rs = "0.4.0"
+curve25519-dalek = { version = "1", default-features = false }
+rand_core = { version = "0.3.1", default-features = false }
 
-[dependencies.curve25519-dalek]
-default-features = false
-version = "1"
-
-[dependencies.rand_core]
-default-features = false
-version = "0.3.1"
+[dev-dependencies]
+rand = { version = "0.6.0" }
 
 [features]
 nightly = ["curve25519-dalek/nightly"]
