@@ -1,21 +1,19 @@
-#![feature(alloc)]
-
 /// This crate takes a STROBE based approach to the patched SPEKE described in
 /// https://arxiv.org/pdf/1802.04900.pdf
 extern crate alloc;
 
 extern crate curve25519_dalek;
-extern crate rand;
+extern crate rand_core;
 extern crate strobe_rs;
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use rand::{CryptoRng, Rng};
+use rand_core::{CryptoRng, RngCore};
 use strobe_rs::Strobe;
 
 #[cfg(test)]
 mod tests {
-    use rand::rngs::OsRng;
+    use rand_core::rngs::OsRng;
     use strobe_rs::SecParam;
 
     use *;
@@ -86,7 +84,7 @@ impl Handshake {
 impl Yodeler {
     pub fn new<T>(mut transcript: Strobe, rng: &mut T, password: &[u8]) -> (Self, Handshake)
     where
-        T: Rng + CryptoRng,
+        T: RngCore + CryptoRng,
     {
         // domain seperator
         transcript.ad(b"https://github.com/evq/yodel".to_vec(), None, false);
@@ -105,7 +103,7 @@ impl Yodeler {
 
         // NOTE the session identifier (A) ensures that messages cannot be replayed from between sessions
         let mut session_id = [0u8; 64];
-        rng.fill(&mut session_id[..]);
+        rng.fill_bytes(&mut session_id[..]);
 
         // generate a random blind (x)
         let blind = Scalar::random(rng);
