@@ -1,18 +1,26 @@
 # yodel
 
-**SPEKE + STROBE = YODEL**
+*SPEKE + STROBE*
 
-This crate takes a STROBE based approach to applying the mitigations suggested in
-[Analysing and Patching SPEKE in ISO/IEC](https://arxiv.org/pdf/1802.04900.pdf)
-to address known vulnerabilities in the original SPEKE specification.
+*SPEKE* is a simple and elegant Password Authenticated Key Exchange protocol (PAKE). PAKE
+protocols allow you to negotiate a strong shared key using a weak shared
+secret. Unfortunately the original specification has many known issues.
 
-STROBE elegantly binds unique session information to the transcript - resulting
-in a full-duplex construction whereby distinct TX and RX transcripts result
-from the handshake completion.
+*STROBE* is a simple and lightweight symmetric cryptography protocol framework which
+is suitable for use for performing hashing, encryption, pseudorandom number
+generation, key derivation and authentication all from a single cryptographic primitive.
+STROBE's small size makes it easy to audit and possible to use from constrained
+embedded contexts. It keeps a running transcript dependant on all prior operations.
 
-These transcripts have had a strong `KEY` set as a result of the SPEKE handshake
-and as such are ready for direct use in further STROBE protocols, such as the
-[AEAD example protocol](https://strobe.sourceforge.io/examples/aead/).
+By bringing them together the yodel leverages a STROBE transcript's dependence
+on all prior inputs to mitigate issues with the original SPEKE specification.
+
+The strategy for these mitigations stems from the paper
+[Analysing and Patching SPEKE in ISO/IEC.](https://arxiv.org/pdf/1802.04900.pdf)
+
+A yodel handshake results in full-duplex STROBE construction, with distinct TX and RX
+transcripts. The two parties participating in the handshake will share these
+common secret transcripts and can therefore form an encrypted channel for communicating.
 
 # Use
 
@@ -23,4 +31,29 @@ I'm not a cryptographer, this code has not been audited in any capacity.
 # TODO
 
 The current STROBE library used requires passing vecs, which means this library
-isn't ideal for use in a no_std environment without alloc.
+isn't ideal for use in a `no_std` environment without alloc. This library is
+intended to be fully `no_std` compatible so that embedded devices can take
+advantage of the STROBE based construction.
+
+The session identifier type should be tweaked.
+
+# Considerations for use
+
+It may be useful to incorporate shared randomness into the transcript
+before the yodel handshake if your application involves multiple runs
+with the same password.  An approach in this vein has been suggested as
+a way of increasing resistance to side channel attacks; similar to
+suggested mitigations for [power supply analysis attacks that have broken
+certain implementations of EdDSA signing.](https://eprint.iacr.org/2017/985.pdf)
+
+# Examples
+
+```
+use rand::rngs::OsRng;
+use strobe_rs::{SecParam, Strobe};
+use yodel;
+
+let mut rng = OsRng::new().unwrap();
+let (yodeler, X) = yodel::Yodeler::new(Strobe::new(b"yodeltest".to_vec(), SecParam::B128), &mut rng, "testpassword".as_bytes());
+let yodel::Duplex { tx, rx } = yodeler.complete(X).unwrap();
+```

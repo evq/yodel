@@ -2,17 +2,18 @@
 authors = ["eV <ev@7pr.xyz>"]
 name = "yodel"
 version = "0.1.0"
+edition = "2018"
 
 [dependencies]
-strobe-rs = "0.3.4"
+strobe-rs = { git = "https://github.com/rozbb/strobe-rs"}
 
 [dependencies.curve25519-dalek]
 default-features = false
-version = "0.21.0"
+version = "1"
 
 [dependencies.rand]
 default-features = false
-version = "0.5.5"
+version = "0.6.4"
 
 [features]
 nightly = ["curve25519-dalek/nightly"]
