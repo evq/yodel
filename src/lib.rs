@@ -9,10 +9,66 @@ extern crate curve25519_dalek;
 extern crate rand;
 extern crate strobe_rs;
 
+use core::cmp;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use rand::{CryptoRng, Rng};
-use strobe_rs::Strobe;
+use strobe_rs::{SecParam, Strobe};
+
+/// The SessionHandshake sub-protocol is used to arrive at a shared session id
+pub struct SessionHandshake {
+    id: [u8; 64],
+}
+
+const SESSION_HANDSHAKE_LENGTH: usize = 64;
+
+impl SessionHandshake {
+    /// Initiate a new handshake to arrive at a shared session id
+    pub fn initiate<T>(rng: &mut T) -> SessionHandshake
+    where
+        T: Rng + CryptoRng,
+    {
+        let mut session = SessionHandshake { id: [0u8; 64] };
+        rng.fill(&mut session.id[..]);
+        session
+    }
+
+    /// Complete the handshake, resulting in a STROBE transcript bound to the session id
+    pub fn complete(self, transcript: Option<Strobe>, handshake: SessionHandshake) -> Strobe {
+        let mut transcript = transcript
+            .map(|mut transcript| {
+                transcript.ad(b"https://github.com/evq/yodel/session/handshake", false);
+                transcript
+            })
+            .unwrap_or_else(|| {
+                Strobe::new(
+                    b"https://github.com/evq/yodel/session/handshake",
+                    SecParam::B256,
+                )
+            });
+        // Inspired by "Analysing and Patching SPEKE in ISO/IEC." session key computation (A.)
+        transcript.ad(cmp::min(self.id.as_ref(), handshake.id.as_ref()), false);
+        transcript.ad(cmp::max(self.id.as_ref(), handshake.id.as_ref()), false);
+        transcript
+    }
+
+    /// Convert the session handshake to bytes
+    pub fn to_bytes(&self) -> [u8; SESSION_HANDSHAKE_LENGTH] {
+        self.id
+    }
+
+    /// Construct a Handshake from a slice of bytes
+    pub fn from_bytes(bytes: &[u8]) -> Result<SessionHandshake, ()> {
+        if bytes.len() != SESSION_HANDSHAKE_LENGTH {
+            return Err(());
+        }
+
+        let mut id: [u8; 64] = [0u8; 64];
+        id.copy_from_slice(&bytes[..64]);
+
+        Ok(SessionHandshake { id })
+    }
+}
 
 /// A Yodeler holds local state about a yodel session that is in progress
 ///
@@ -84,10 +140,10 @@ impl Yodeler {
         T: Rng + CryptoRng,
     {
         // domain seperator
-        transcript.ad(b"https://github.com/evq/yodel".to_vec(), None, false);
+        transcript.ad(b"https://github.com/evq/yodel/pace", false);
 
         // add the password to the transcript
-        transcript.ad(password.to_vec(), None, false);
+        transcript.ad(password, false);
 
         // hash the transcript (and thus password) to a point.
         //
@@ -102,7 +158,7 @@ impl Yodeler {
         // the Ristretto implementation of scalar multiplication will reject points on the twist,
         // so this should not be an issue in this implementation.
         let mut buf = [0; 64];
-        buf.copy_from_slice(&transcript.prf(64, None, false));
+        transcript.prf(&mut buf, false);
         let g = RistrettoPoint::from_uniform_bytes(&buf);
 
         // TODO should we RATCHET here?
@@ -126,7 +182,7 @@ impl Yodeler {
             session_id,
             blinded_password: blinded_password.compress(),
         };
-        tx_transcript.send_clr(handshake.to_bytes().to_vec(), None, false);
+        tx_transcript.send_clr(&handshake.to_bytes(), false);
 
         (
             Yodeler {
@@ -142,14 +198,12 @@ impl Yodeler {
     /// Complete the handshake, resulting in duplex STROBE transcripts
     pub fn complete(mut self, handshake: Handshake) -> Result<Duplex, ()> {
         // apply the incoming handshake
-        self.tx_transcript
-            .recv_clr(handshake.to_bytes().to_vec(), None, false);
+        self.tx_transcript.recv_clr(&handshake.to_bytes(), false);
 
         // catch the rx transcript up
+        self.rx_transcript.recv_clr(&handshake.to_bytes(), false);
         self.rx_transcript
-            .recv_clr(handshake.to_bytes().to_vec(), None, false);
-        self.rx_transcript
-            .send_clr(self.handshake.to_bytes().to_vec(), None, false);
+            .send_clr(&self.handshake.to_bytes(), false);
 
         // NOTE since the transcripts are bound to both handshakes, a MITM attempt at
         // a key malleability attack will fail (as it would change the blinded_password)
@@ -158,9 +212,9 @@ impl Yodeler {
         let shared_secret = handshake.consume().decompress().ok_or(())? * self.blind;
 
         self.tx_transcript
-            .key(shared_secret.compress().as_bytes().to_vec(), None, false);
+            .key(shared_secret.compress().as_bytes(), false);
         self.rx_transcript
-            .key(shared_secret.compress().as_bytes().to_vec(), None, false);
+            .key(shared_secret.compress().as_bytes(), false);
 
         Ok(Duplex {
             tx: self.tx_transcript,
@@ -181,8 +235,8 @@ mod tests {
     fn same_password_works() {
         let mut rng = OsRng::new().unwrap();
 
-        let s_a = Strobe::new(b"yodeltest".to_vec(), SecParam::B128);
-        let s_b = Strobe::new(b"yodeltest".to_vec(), SecParam::B128);
+        let s_a = Strobe::new(b"yodeltest", SecParam::B128);
+        let s_b = Strobe::new(b"yodeltest", SecParam::B128);
 
         let (yodeler_a, X) = Yodeler::new(s_a, &mut rng, "testpassword".as_bytes());
         let (yodeler_b, Y) = Yodeler::new(s_b, &mut rng, "testpassword".as_bytes());
@@ -196,8 +250,19 @@ mod tests {
             rx: mut rx_b,
         } = yodeler_b.complete(X).unwrap();
 
-        assert_eq!(tx_a.prf(64, None, false), rx_b.prf(64, None, false));
-        assert_eq!(tx_b.prf(64, None, false), rx_a.prf(64, None, false));
+        let mut tx_a_prf = [0u8; 64];
+        tx_a.prf(&mut tx_a_prf, false);
+        let mut rx_b_prf = [0u8; 64];
+        rx_b.prf(&mut rx_b_prf, false);
+
+        assert_eq!(tx_a_prf.as_ref(), rx_b_prf.as_ref());
+
+        let mut tx_b_prf = [0u8; 64];
+        tx_b.prf(&mut tx_b_prf, false);
+        let mut rx_a_prf = [0u8; 64];
+        rx_a.prf(&mut rx_a_prf, false);
+
+        assert_eq!(tx_b_prf.as_ref(), rx_a_prf.as_ref());
     }
 
     #[test]
@@ -205,8 +270,8 @@ mod tests {
     fn different_password_fails() {
         let mut rng = OsRng::new().unwrap();
 
-        let s_a = Strobe::new(b"yodeltest".to_vec(), SecParam::B128);
-        let s_b = Strobe::new(b"yodeltest".to_vec(), SecParam::B128);
+        let s_a = Strobe::new(b"yodeltest", SecParam::B128);
+        let s_b = Strobe::new(b"yodeltest", SecParam::B128);
 
         let (yodeler_a, X) = Yodeler::new(s_a, &mut rng, "testpassword".as_bytes());
         let (yodeler_b, Y) = Yodeler::new(s_b, &mut rng, "passwordtest".as_bytes());
@@ -220,7 +285,64 @@ mod tests {
             rx: mut rx_b,
         } = yodeler_b.complete(X).unwrap();
 
-        assert_ne!(tx_a.prf(64, None, false), rx_b.prf(64, None, false));
-        assert_ne!(tx_b.prf(64, None, false), rx_a.prf(64, None, false));
+        let mut tx_a_prf = [0u8; 64];
+        tx_a.prf(&mut tx_a_prf, false);
+        let mut rx_b_prf = [0u8; 64];
+        rx_b.prf(&mut rx_b_prf, false);
+
+        assert_ne!(tx_a_prf.as_ref(), rx_b_prf.as_ref());
+
+        let mut tx_b_prf = [0u8; 64];
+        tx_b.prf(&mut tx_b_prf, false);
+        let mut rx_a_prf = [0u8; 64];
+        rx_a.prf(&mut rx_a_prf, false);
+
+        assert_ne!(tx_b_prf.as_ref(), rx_a_prf.as_ref());
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn session_id_works() {
+        let mut rng = OsRng::new().unwrap();
+
+        let s_a = SessionHandshake::initiate(&mut rng);
+        let s_b = SessionHandshake::initiate(&mut rng);
+
+        let s_a_bytes = s_a.to_bytes();
+        let s_b_bytes = s_b.to_bytes();
+
+        let (yodeler_a, X) = Yodeler::new(
+            s_a.complete(None, SessionHandshake::from_bytes(&s_b_bytes).unwrap()),
+            &mut rng,
+            "testpassword".as_bytes(),
+        );
+        let (yodeler_b, Y) = Yodeler::new(
+            s_b.complete(None, SessionHandshake::from_bytes(&s_a_bytes).unwrap()),
+            &mut rng,
+            "testpassword".as_bytes(),
+        );
+
+        let Duplex {
+            tx: mut tx_a,
+            rx: mut rx_a,
+        } = yodeler_a.complete(Y).unwrap();
+        let Duplex {
+            tx: mut tx_b,
+            rx: mut rx_b,
+        } = yodeler_b.complete(X).unwrap();
+
+        let mut tx_a_prf = [0u8; 64];
+        tx_a.prf(&mut tx_a_prf, false);
+        let mut rx_b_prf = [0u8; 64];
+        rx_b.prf(&mut rx_b_prf, false);
+
+        assert_eq!(tx_a_prf.as_ref(), rx_b_prf.as_ref());
+
+        let mut tx_b_prf = [0u8; 64];
+        tx_b.prf(&mut tx_b_prf, false);
+        let mut rx_a_prf = [0u8; 64];
+        rx_a.prf(&mut rx_a_prf, false);
+
+        assert_eq!(tx_b_prf.as_ref(), rx_a_prf.as_ref());
     }
 }

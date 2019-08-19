@@ -5,15 +5,15 @@ version = "0.1.0"
 edition = "2018"
 
 [dependencies]
-strobe-rs = { git = "https://github.com/rozbb/strobe-rs"}
+strobe-rs = { version = "0.5.1" }
 
 [dependencies.curve25519-dalek]
 default-features = false
 version = "1"
 
 [dependencies.rand]
-default-features = false
-version = "0.6.4"
+#default-features = false
+version = "0.6"
 
 [features]
 nightly = ["curve25519-dalek/nightly"]
