@@ -7,7 +7,7 @@ edition = "2018"
 [dependencies.strobe-rs]
 default-features = false
 version = "0.5.1"
-path = "../strobe-rs"
+git = "https://git.cutelab.house/evq/strobe-rs"
 
 [dependencies.curve25519-dalek]
 default-features = false
