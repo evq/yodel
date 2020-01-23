@@ -4,20 +4,22 @@ name = "yodel"
 version = "0.1.0"
 edition = "2018"
 
-[dependencies]
-strobe-rs = { version = "0.5.1" }
+[dependencies.strobe-rs]
+default-features = false
+version = "0.5.1"
+path = "../strobe-rs"
 
 [dependencies.curve25519-dalek]
 default-features = false
 version = "1"
 
 [dependencies.rand]
-#default-features = false
+default-features = false
 version = "0.6"
 
 [features]
 nightly = ["curve25519-dalek/nightly"]
-default = ["std", "u32_backend"]
+default = ["u32_backend"]
 std = ["alloc", "curve25519-dalek/std"]
 alloc = ["curve25519-dalek/alloc"]
 u32_backend = ["curve25519-dalek/u32_backend"]

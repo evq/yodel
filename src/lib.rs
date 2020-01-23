@@ -1,10 +1,8 @@
-#![feature(alloc)]
+#![no_std]
 #![deny(missing_docs)]
 #![cfg_attr(feature = "nightly", feature(external_doc))]
 #![cfg_attr(feature = "nightly", doc(include = "../README.md"))]
 //!
-extern crate alloc;
-
 extern crate curve25519_dalek;
 extern crate rand;
 extern crate strobe_rs;
