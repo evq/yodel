@@ -10,6 +10,7 @@ extern crate rand;
 extern crate strobe_rs;
 
 use core::cmp;
+use curve25519_dalek::constants;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use rand::{CryptoRng, Rng};
@@ -70,6 +71,181 @@ impl SessionHandshake {
     }
 }
 
+/// Betruf
+pub struct Betruf<'a> {
+    transcript: Strobe,
+    blind: Scalar,
+    //user: &'astr
+    password: &'a [u8],
+}
+
+/// SaltRequest
+#[derive(Clone, Copy)]
+pub struct SaltRequest {
+    U: CompressedRistretto,
+}
+
+const SALT_REQUEST_LENGTH: usize = 32;
+
+impl SaltRequest {
+    /// Convert the handshake to bytes
+    pub fn to_bytes(&self) -> [u8; SALT_REQUEST_LENGTH] {
+        *self.U.as_bytes()
+    }
+
+    /// Construct a Handshake from a slice of bytes
+    pub fn from_bytes(bytes: &[u8]) -> Result<SaltRequest, ()> {
+        let mut bits: [u8; 32] = [0u8; 32];
+        bits.copy_from_slice(&bytes[..32]);
+
+        Ok(SaltRequest {
+            U: CompressedRistretto(bits),
+        })
+    }
+
+    /// Reply to a request
+    pub fn reply<T>(
+        self,
+        mut transcript: Strobe,
+        rng: &mut T,
+        salt: Scalar,
+        verifier: RistrettoPoint,
+    ) -> Result<(Strobe, SaltResponse), ()>
+    where
+        T: Rng + CryptoRng,
+    {
+        // domain seperator
+        transcript.ad(b"https://github.com/evq/yodel/aucpace", false);
+
+        transcript.recv_clr(&self.to_bytes(), false);
+
+        // generate a random scalar (x)
+        let x = Scalar::random(rng);
+        // X = B ^ x
+        let X = &constants::RISTRETTO_BASEPOINT_TABLE * &x;
+
+        // UQ = U ^ q
+        let UQ = self.U.decompress().ok_or(())? * &salt;
+
+        let response = SaltResponse {
+            X: X.compress(),
+            UQ: UQ.compress(),
+        };
+
+        transcript.send_clr(&response.to_bytes(), false);
+
+        let PRS = verifier * &x;
+
+        transcript.key(PRS.compress().as_bytes(), false);
+
+        Ok((transcript, response))
+    }
+}
+
+/// SaltResponse
+#[derive(Clone, Copy)]
+pub struct SaltResponse {
+    X: CompressedRistretto,
+    UQ: CompressedRistretto,
+}
+
+const SALT_RESPONSE_LENGTH: usize = 64;
+
+impl SaltResponse {
+    /// Convert the handshake to bytes
+    pub fn to_bytes(&self) -> [u8; SALT_RESPONSE_LENGTH] {
+        let mut bytes: [u8; SALT_RESPONSE_LENGTH] = [0u8; SALT_RESPONSE_LENGTH];
+        bytes[..32].copy_from_slice(self.X.as_bytes());
+        bytes[32..].copy_from_slice(self.UQ.as_bytes());
+        bytes
+    }
+
+    /// Construct a Handshake from a slice of bytes
+    pub fn from_bytes(bytes: &[u8]) -> Result<SaltResponse, ()> {
+        let mut x_bits: [u8; 32] = [0u8; 32];
+        x_bits.copy_from_slice(&bytes[..32]);
+
+        let mut uq_bits: [u8; 32] = [0u8; 32];
+        uq_bits.copy_from_slice(&bytes[32..64]);
+
+        Ok(SaltResponse {
+            X: CompressedRistretto(x_bits),
+            UQ: CompressedRistretto(uq_bits),
+        })
+    }
+}
+
+fn kdf(password: &[u8], salt: &RistrettoPoint) -> Scalar {
+    // FIXME
+    let mut kdf = Strobe::new(b"", SecParam::B256);
+    kdf.ad(password, false);
+    kdf.ad(salt.compress().as_bytes(), false);
+
+    // rounds
+    kdf.ratchet(10000, false);
+
+    // w = KDF(pw, salt)
+
+    let mut w_bytes = [0u8; 64];
+    kdf.prf(&mut w_bytes, false);
+    Scalar::from_bytes_mod_order_wide(&w_bytes)
+}
+
+fn pass_to_point(password: &[u8]) -> RistrettoPoint {
+    let mut tmp = Strobe::new(b"", SecParam::B256);
+    tmp.ad(password, false);
+
+    let mut buf = [0; 64];
+    tmp.prf(&mut buf, false);
+    RistrettoPoint::from_uniform_bytes(&buf)
+}
+
+impl<'a> Betruf<'a> {
+    /// Create a new Yodeler
+    pub fn new<T>(mut transcript: Strobe, rng: &mut T, password: &'a [u8]) -> (Self, SaltRequest)
+    where
+        T: Rng + CryptoRng,
+    {
+        // domain seperator
+        transcript.ad(b"https://github.com/evq/yodel/aucpace", false);
+
+        let Z = pass_to_point(password);
+        // generate a random blind (r)
+        let blind = Scalar::random(rng);
+        // U = Z ^ r
+        let blinded_password = Z * blind;
+
+        let request = SaltRequest {
+            U: blinded_password.compress(),
+        };
+        transcript.send_clr(&request.to_bytes(), false);
+
+        (
+            Betruf {
+                transcript,
+                blind,
+                password,
+            },
+            request,
+        )
+    }
+
+    /// Complete
+    pub fn complete(mut self, response: SaltResponse) -> Result<Strobe, ()> {
+        self.transcript.recv_clr(&response.to_bytes(), false);
+
+        let salt = response.UQ.decompress().ok_or(())? * &self.blind.invert();
+
+        let w = kdf(self.password, &salt);
+
+        let PRS = response.X.decompress().ok_or(())? * &w;
+
+        self.transcript.key(PRS.compress().as_bytes(), false);
+
+        Ok(self.transcript)
+    }
+}
+
 /// A Yodeler holds local state about a yodel session that is in progress
 ///
 /// The resulting transcripts have had a strong `KEY` set as a result of the SPEKE handshake
@@ -89,14 +265,6 @@ pub struct Yodeler {
 pub struct Handshake {
     session_id: [u8; 64],
     blinded_password: CompressedRistretto,
-}
-
-/// Duplex is an output type wrapper around the tx and rx transcripts
-pub struct Duplex {
-    /// The transmitter transcript - shares state with the other party's reciever transcript
-    pub tx: Strobe,
-    /// The reciever transcript - shares state with the other party's transmitter transcript
-    pub rx: Strobe,
 }
 
 const HANDSHAKE_LENGTH: usize = 96;
@@ -133,17 +301,27 @@ impl Handshake {
     }
 }
 
+/// Duplex is an output type wrapper around the tx and rx transcripts
+pub struct Duplex {
+    /// The transmitter transcript - shares state with the other party's reciever transcript
+    pub tx: Strobe,
+    /// The reciever transcript - shares state with the other party's transmitter transcript
+    pub rx: Strobe,
+}
+
 impl Yodeler {
-    /// Create a new Yodeler
-    pub fn new<T>(mut transcript: Strobe, rng: &mut T, password: &[u8]) -> (Self, Handshake)
+    /// Create a new Yodeler, if password is None it is assumed to have been added to the transcript
+    pub fn new<T>(mut transcript: Strobe, rng: &mut T, password: Option<&[u8]>) -> (Self, Handshake)
     where
         T: Rng + CryptoRng,
     {
         // domain seperator
-        transcript.ad(b"https://github.com/evq/yodel/pace", false);
+        transcript.ad(b"https://github.com/evq/yodel/cpace", false);
 
-        // add the password to the transcript
-        transcript.ad(password, false);
+        if let Some(password) = password {
+            // add the password to the transcript
+            transcript.ad(password, false);
+        }
 
         // hash the transcript (and thus password) to a point.
         //
@@ -232,14 +410,77 @@ mod tests {
 
     #[test]
     #[allow(non_snake_case)]
+    fn betruf_works() {
+        let mut rng = OsRng::new().unwrap();
+        let q = Scalar::random(&mut rng);
+
+        // enroll
+        let password = "testpassword".as_bytes();
+        let Z = pass_to_point(password);
+        let salt = Z * &q;
+        let w = kdf(password, &salt);
+        let verifier = &constants::RISTRETTO_BASEPOINT_TABLE * &w;
+
+        let s_a = Strobe::new(b"yodeltest", SecParam::B128);
+        let s_b = Strobe::new(b"yodeltest", SecParam::B128);
+
+        // Client -> Server
+        let (betruf, request) = Betruf::new(s_a, &mut rng, password);
+
+        // Server -> Client
+        let (mut fin_b, response) = request.reply(s_b, &mut rng, q, verifier).unwrap();
+        let (yodeler_b, Y) = Yodeler::new(fin_b, &mut rng, None);
+
+        // Client -> Server
+        let mut fin_a = betruf.complete(response).unwrap();
+
+        let mut fin_a_prf = [0u8; 64];
+        fin_a.prf(&mut fin_a_prf, false);
+        let mut fin_b_prf = [0u8; 64];
+        fin_b.prf(&mut fin_b_prf, false);
+        assert_eq!(fin_a_prf.as_ref(), fin_b_prf.as_ref());
+
+        let (yodeler_a, X) = Yodeler::new(fin_a, &mut rng, None);
+
+        let Duplex {
+            tx: mut tx_a,
+            rx: mut rx_a,
+        } = yodeler_a.complete(Y).unwrap();
+
+        // Server
+
+        let Duplex {
+            tx: mut tx_b,
+            rx: mut rx_b,
+        } = yodeler_b.complete(X).unwrap();
+
+        // Exchange complete
+
+        let mut tx_a_prf = [0u8; 64];
+        tx_a.prf(&mut tx_a_prf, false);
+        let mut rx_b_prf = [0u8; 64];
+        rx_b.prf(&mut rx_b_prf, false);
+
+        assert_eq!(tx_a_prf.as_ref(), rx_b_prf.as_ref());
+
+        let mut tx_b_prf = [0u8; 64];
+        tx_b.prf(&mut tx_b_prf, false);
+        let mut rx_a_prf = [0u8; 64];
+        rx_a.prf(&mut rx_a_prf, false);
+
+        assert_eq!(tx_b_prf.as_ref(), rx_a_prf.as_ref());
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
     fn same_password_works() {
         let mut rng = OsRng::new().unwrap();
 
         let s_a = Strobe::new(b"yodeltest", SecParam::B128);
         let s_b = Strobe::new(b"yodeltest", SecParam::B128);
 
-        let (yodeler_a, X) = Yodeler::new(s_a, &mut rng, "testpassword".as_bytes());
-        let (yodeler_b, Y) = Yodeler::new(s_b, &mut rng, "testpassword".as_bytes());
+        let (yodeler_a, X) = Yodeler::new(s_a, &mut rng, Some("testpassword".as_bytes()));
+        let (yodeler_b, Y) = Yodeler::new(s_b, &mut rng, Some("testpassword".as_bytes()));
 
         let Duplex {
             tx: mut tx_a,
@@ -273,8 +514,8 @@ mod tests {
         let s_a = Strobe::new(b"yodeltest", SecParam::B128);
         let s_b = Strobe::new(b"yodeltest", SecParam::B128);
 
-        let (yodeler_a, X) = Yodeler::new(s_a, &mut rng, "testpassword".as_bytes());
-        let (yodeler_b, Y) = Yodeler::new(s_b, &mut rng, "passwordtest".as_bytes());
+        let (yodeler_a, X) = Yodeler::new(s_a, &mut rng, Some("testpassword".as_bytes()));
+        let (yodeler_b, Y) = Yodeler::new(s_b, &mut rng, Some("passwordtest".as_bytes()));
 
         let Duplex {
             tx: mut tx_a,
@@ -314,12 +555,12 @@ mod tests {
         let (yodeler_a, X) = Yodeler::new(
             s_a.complete(None, SessionHandshake::from_bytes(&s_b_bytes).unwrap()),
             &mut rng,
-            "testpassword".as_bytes(),
+            Some("testpassword".as_bytes()),
         );
         let (yodeler_b, Y) = Yodeler::new(
             s_b.complete(None, SessionHandshake::from_bytes(&s_a_bytes).unwrap()),
             &mut rng,
-            "testpassword".as_bytes(),
+            Some("testpassword".as_bytes()),
         );
 
         let Duplex {
