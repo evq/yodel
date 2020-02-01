@@ -11,15 +11,18 @@ git = "https://git.cutelab.house/evq/strobe-rs"
 
 [dependencies.curve25519-dalek]
 default-features = false
-version = "1"
+version = "2"
 
-[dependencies.rand]
+[dependencies.rand_core]
 default-features = false
-version = "0.6"
+version = "0.5"
+
+[dev-dependencies.rand]
+version = "0.7"
 
 [features]
 nightly = ["curve25519-dalek/nightly"]
-default = ["u32_backend"]
+default = ["std", "u32_backend"]
 std = ["alloc", "curve25519-dalek/std"]
 alloc = ["curve25519-dalek/alloc"]
 u32_backend = ["curve25519-dalek/u32_backend"]

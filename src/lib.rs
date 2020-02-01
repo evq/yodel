@@ -4,13 +4,13 @@
 #![cfg_attr(feature = "nightly", doc(include = "../README.md"))]
 //!
 extern crate curve25519_dalek;
-extern crate rand;
+extern crate rand_core;
 extern crate strobe_rs;
 
 use core::cmp;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use rand::{CryptoRng, Rng};
+use rand_core::{CryptoRng, RngCore};
 use strobe_rs::{SecParam, Strobe};
 
 /// The SessionHandshake sub-protocol is used to arrive at a shared session id
@@ -24,10 +24,10 @@ impl SessionHandshake {
     /// Initiate a new handshake to arrive at a shared session id
     pub fn initiate<T>(rng: &mut T) -> SessionHandshake
     where
-        T: Rng + CryptoRng,
+        T: RngCore + CryptoRng,
     {
         let mut session = SessionHandshake { id: [0u8; 64] };
-        rng.fill(&mut session.id[..]);
+        rng.fill_bytes(&mut session.id[..]);
         session
     }
 
@@ -135,7 +135,7 @@ impl Yodeler {
     /// Create a new Yodeler
     pub fn new<T>(mut transcript: Strobe, rng: &mut T, password: &[u8]) -> (Self, Handshake)
     where
-        T: Rng + CryptoRng,
+        T: RngCore + CryptoRng,
     {
         // domain seperator
         transcript.ad(b"https://github.com/evq/yodel/pace", false);
@@ -169,7 +169,7 @@ impl Yodeler {
         //
         // NOTE ensures that messages cannot be replayed from between sessions
         let mut session_id = [0u8; 64];
-        rng.fill(&mut session_id[..]);
+        rng.fill_bytes(&mut session_id[..]);
 
         // generate a random blind (x)
         let blind = Scalar::random(rng);
@@ -231,7 +231,7 @@ mod tests {
     #[test]
     #[allow(non_snake_case)]
     fn same_password_works() {
-        let mut rng = OsRng::new().unwrap();
+        let mut rng = OsRng;
 
         let s_a = Strobe::new(b"yodeltest", SecParam::B128);
         let s_b = Strobe::new(b"yodeltest", SecParam::B128);
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     #[allow(non_snake_case)]
     fn different_password_fails() {
-        let mut rng = OsRng::new().unwrap();
+        let mut rng = OsRng;
 
         let s_a = Strobe::new(b"yodeltest", SecParam::B128);
         let s_b = Strobe::new(b"yodeltest", SecParam::B128);
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     #[allow(non_snake_case)]
     fn session_id_works() {
-        let mut rng = OsRng::new().unwrap();
+        let mut rng = OsRng;
 
         let s_a = SessionHandshake::initiate(&mut rng);
         let s_b = SessionHandshake::initiate(&mut rng);
