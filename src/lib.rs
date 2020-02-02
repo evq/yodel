@@ -13,12 +13,18 @@ use curve25519_dalek::scalar::Scalar;
 use rand_core::{CryptoRng, RngCore};
 use strobe_rs::{SecParam, Strobe};
 
-/// The SessionHandshake sub-protocol is used to arrive at a shared session id
-pub struct SessionHandshake {
-    id: [u8; 64],
-}
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
-const SESSION_HANDSHAKE_LENGTH: usize = 64;
+const SESSION_ID_LENGTH: usize = 32;
+const SESSION_HANDSHAKE_LENGTH: usize = SESSION_ID_LENGTH;
+
+/// The SessionHandshake sub-protocol is used to arrive at a shared session id
+#[derive(Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct SessionHandshake {
+    id: [u8; SESSION_ID_LENGTH],
+}
 
 impl SessionHandshake {
     /// Initiate a new handshake to arrive at a shared session id
@@ -26,7 +32,9 @@ impl SessionHandshake {
     where
         T: RngCore + CryptoRng,
     {
-        let mut session = SessionHandshake { id: [0u8; 64] };
+        let mut session = SessionHandshake {
+            id: [0u8; SESSION_ID_LENGTH],
+        };
         rng.fill_bytes(&mut session.id[..]);
         session
     }
@@ -61,8 +69,8 @@ impl SessionHandshake {
             return Err(());
         }
 
-        let mut id: [u8; 64] = [0u8; 64];
-        id.copy_from_slice(&bytes[..64]);
+        let mut id: [u8; SESSION_ID_LENGTH] = [0u8; SESSION_ID_LENGTH];
+        id.copy_from_slice(&bytes[..SESSION_ID_LENGTH]);
 
         Ok(SessionHandshake { id })
     }
@@ -84,8 +92,9 @@ pub struct Yodeler {
 
 /// A Handshake results from creating a new yodel session and should be exchanged with the other party
 #[derive(Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Handshake {
-    session_id: [u8; 64],
+    session_id: [u8; SESSION_ID_LENGTH],
     blinded_password: CompressedRistretto,
 }
 
@@ -97,14 +106,14 @@ pub struct Duplex {
     pub rx: Strobe,
 }
 
-const HANDSHAKE_LENGTH: usize = 96;
+const HANDSHAKE_LENGTH: usize = 64;
 
 impl Handshake {
     /// Convert the handshake to bytes
     pub fn to_bytes(&self) -> [u8; HANDSHAKE_LENGTH] {
         let mut bytes: [u8; HANDSHAKE_LENGTH] = [0u8; HANDSHAKE_LENGTH];
-        bytes[..64].copy_from_slice(&self.session_id);
-        bytes[64..].copy_from_slice(self.blinded_password.as_bytes());
+        bytes[..SESSION_ID_LENGTH].copy_from_slice(&self.session_id);
+        bytes[SESSION_ID_LENGTH..].copy_from_slice(self.blinded_password.as_bytes());
         bytes
     }
 
@@ -114,11 +123,11 @@ impl Handshake {
             return Err(());
         }
 
-        let mut session_id: [u8; 64] = [0u8; 64];
-        session_id.copy_from_slice(&bytes[..64]);
+        let mut session_id: [u8; SESSION_ID_LENGTH] = [0u8; SESSION_ID_LENGTH];
+        session_id.copy_from_slice(&bytes[..SESSION_ID_LENGTH]);
 
         let mut bits: [u8; 32] = [0u8; 32];
-        bits.copy_from_slice(&bytes[64..]);
+        bits.copy_from_slice(&bytes[SESSION_ID_LENGTH..]);
 
         Ok(Handshake {
             session_id,
@@ -168,7 +177,7 @@ impl Yodeler {
         // the session identifier (A)
         //
         // NOTE ensures that messages cannot be replayed from between sessions
-        let mut session_id = [0u8; 64];
+        let mut session_id = [0u8; SESSION_ID_LENGTH];
         rng.fill_bytes(&mut session_id[..]);
 
         // generate a random blind (x)

@@ -4,6 +4,9 @@ name = "yodel"
 version = "0.1.0"
 edition = "2018"
 
+[dependencies]
+serde = { version = "1.0", default-features = false, optional = true, features = ["derive"] }
+
 [dependencies.strobe-rs]
 default-features = false
 version = "0.5.1"
@@ -11,6 +14,7 @@ git = "https://git.cutelab.house/evq/strobe-rs"
 
 [dependencies.curve25519-dalek]
 default-features = false
+features = ["serde"]
 version = "2"
 
 [dependencies.rand_core]
