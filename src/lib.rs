@@ -20,7 +20,7 @@ const SESSION_ID_LENGTH: usize = 32;
 const SESSION_HANDSHAKE_LENGTH: usize = SESSION_ID_LENGTH;
 
 /// The SessionHandshake sub-protocol is used to arrive at a shared session id
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct SessionHandshake {
     id: [u8; SESSION_ID_LENGTH],
@@ -91,7 +91,7 @@ pub struct Yodeler {
 }
 
 /// A Handshake results from creating a new yodel session and should be exchanged with the other party
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Handshake {
     session_id: [u8; SESSION_ID_LENGTH],
