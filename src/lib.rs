@@ -182,6 +182,22 @@ impl Handshake {
     }
 }
 
+fn transcript_into_generator(mut transcript: Strobe) -> RistrettoPoint {
+    // hash the transcript (and thus password) to a point.
+    //
+    // NOTE using from_uniform_bytes (which performs two Elligator2 mappings
+    // and adds them) avoids the original SPEKE basepoint generation issue which allowed
+    // for multiple guesses per online run due to exponential equivalence between passwords.
+    //
+    // there is a second issue possible when deriving the base point, namely when hashing to
+    // a twisted curve it is possible to either land on the curve or the twist. in
+    // situations where the same password is being used with a different transcript this
+    // would leak 1 bit per run. use of ristretto eliminates this issue
+    let mut buf = [0; 64];
+    transcript.prf(&mut buf, false);
+    RistrettoPoint::from_uniform_bytes(&buf)
+}
+
 fn derive_originator_id(self_identity: &[u8]) -> [u8; ORIGINATOR_ID_LENGTH] {
     let mut originator_id_transcript = Strobe::new(
         b"https://github.com/evq/yodel/cpace/originator_id",
@@ -245,24 +261,10 @@ impl Yodeler {
         transcript.ad(b"https://github.com/evq/yodel/cpace/password", false);
         transcript.key(password, false);
 
-        // hash the transcript (and thus password) to a point.
-        //
-        // NOTE using from_uniform_bytes (which performs two Elligator2 mappings
-        // and adds them) avoids the original SPEKE basepoint generation issue which allowed
-        // for multiple guesses per online run due to exponential equivalence between passwords.
-        //
-        // there is a second issue possible when deriving the base point, namely when hashing to
-        // a twisted curve it is possible to either land on the curve or the twist. in
-        // situations where the same password is being used with a different transcript this
-        // would leak 1 bit per run. use of ristretto eliminates this issue
-        let mut buf = [0; 64];
-        transcript.prf(&mut buf, false);
-        let g = RistrettoPoint::from_uniform_bytes(&buf);
-
         // after this point we will no longer use the original transcript which had the password
         // mixed into it. this is to ensure that if a session key is leaked it provides no useful
         // information about the password to an attacker
-        drop(transcript);
+        let g = transcript_into_generator(transcript);
 
         // generate a random blind (x)
         let blind = Scalar::random(rng);
