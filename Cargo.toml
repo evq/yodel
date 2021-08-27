@@ -21,13 +21,18 @@ version = "2"
 default-features = false
 version = "0.5"
 
+[dependencies.once_cell]
+default-features = false
+version = "1.8"
+path = "../once_cell"
+
 [dev-dependencies.rand]
 version = "0.7"
 
 [features]
-nightly = ["curve25519-dalek/nightly"]
+nightly = ["once_cell/parking_lot", "once_cell/nightly"]
 default = ["std", "u32_backend"]
-std = ["alloc", "curve25519-dalek/std"]
+std = ["alloc", "curve25519-dalek/std", "once_cell/std"]
 alloc = ["curve25519-dalek/alloc"]
 u32_backend = ["curve25519-dalek/u32_backend"]
 u64_backend = ["curve25519-dalek/u64_backend"]

@@ -1,7 +1,6 @@
 #![no_std]
 #![deny(missing_docs)]
-#![cfg_attr(feature = "nightly", feature(external_doc))]
-#![cfg_attr(feature = "nightly", doc(include = "../README.md"))]
+#![doc = include_str!("../README.md")]
 //!
 extern crate curve25519_dalek;
 extern crate rand_core;
@@ -10,15 +9,19 @@ extern crate strobe_rs;
 use core::cmp;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
+use once_cell::sync::OnceCell;
 use rand_core::{CryptoRng, RngCore};
 use strobe_rs::{SecParam, Strobe};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+const APPLICATION_INSTANCE_ID_LENGTH: usize = 32;
 const ORIGINATOR_ID_LENGTH: usize = 32;
 const SESSION_ID_LENGTH: usize = 32;
 const SESSION_HANDSHAKE_LENGTH: usize = SESSION_ID_LENGTH;
+
+static APPLICATION_INSTANCE_ID: OnceCell<[u8; APPLICATION_INSTANCE_ID_LENGTH]> = OnceCell::new();
 
 /// The SessionHandshake sub-protocol is used to arrive at a shared session id
 #[derive(Debug, Clone, Copy)]
@@ -92,6 +95,8 @@ pub struct Yodeler {
     rx_transcript: Strobe,
     blind: Scalar,
     handshake: Handshake,
+    // This is private and cannot be set externally
+    ignore_application_instance_id: bool,
 }
 
 /// A Handshake results from creating a new yodel session and should be exchanged with the other party
@@ -100,6 +105,7 @@ pub struct Yodeler {
 pub struct Handshake {
     session_id: Option<[u8; SESSION_ID_LENGTH]>,
     originator_id: [u8; ORIGINATOR_ID_LENGTH],
+    application_instance_id: [u8; APPLICATION_INSTANCE_ID_LENGTH],
     blinded_password: CompressedRistretto,
 }
 
@@ -111,7 +117,8 @@ pub struct Duplex {
     pub rx: Strobe,
 }
 
-const HANDSHAKE_LENGTH: usize = 96;
+const HANDSHAKE_LENGTH: usize =
+    SESSION_ID_LENGTH + ORIGINATOR_ID_LENGTH + APPLICATION_INSTANCE_ID_LENGTH + 32;
 
 impl Handshake {
     /// Convert the handshake to bytes
@@ -122,7 +129,10 @@ impl Handshake {
         }
         bytes[SESSION_ID_LENGTH..SESSION_ID_LENGTH + ORIGINATOR_ID_LENGTH]
             .copy_from_slice(&self.originator_id);
-        bytes[SESSION_ID_LENGTH + ORIGINATOR_ID_LENGTH..]
+        bytes[SESSION_ID_LENGTH + ORIGINATOR_ID_LENGTH
+            ..SESSION_ID_LENGTH + ORIGINATOR_ID_LENGTH + APPLICATION_INSTANCE_ID_LENGTH]
+            .copy_from_slice(&self.application_instance_id);
+        bytes[SESSION_ID_LENGTH + ORIGINATOR_ID_LENGTH + APPLICATION_INSTANCE_ID_LENGTH..]
             .copy_from_slice(self.blinded_password.as_bytes());
         bytes
     }
@@ -139,12 +149,22 @@ impl Handshake {
         originator_id
             .copy_from_slice(&bytes[SESSION_ID_LENGTH..SESSION_ID_LENGTH + ORIGINATOR_ID_LENGTH]);
 
+        let mut application_instance_id: [u8; APPLICATION_INSTANCE_ID_LENGTH] =
+            [0u8; APPLICATION_INSTANCE_ID_LENGTH];
+        application_instance_id.copy_from_slice(
+            &bytes[SESSION_ID_LENGTH + ORIGINATOR_ID_LENGTH
+                ..SESSION_ID_LENGTH + ORIGINATOR_ID_LENGTH + APPLICATION_INSTANCE_ID_LENGTH],
+        );
+
         let mut bits: [u8; 32] = [0u8; 32];
-        bits.copy_from_slice(&bytes[SESSION_ID_LENGTH + ORIGINATOR_ID_LENGTH..]);
+        bits.copy_from_slice(
+            &bytes[SESSION_ID_LENGTH + ORIGINATOR_ID_LENGTH + APPLICATION_INSTANCE_ID_LENGTH..],
+        );
 
         Ok(Handshake {
             session_id: session_id.iter().any(|x| *x != 0).then(|| session_id),
             originator_id,
+            application_instance_id,
             blinded_password: CompressedRistretto(bits),
         })
     }
@@ -166,19 +186,23 @@ impl Handshake {
     where
         T: RngCore + CryptoRng,
     {
-        match self.session_id {
-            None => Err(()),
-            Some(session_id) => {
-                let mut transcript = Strobe::new(
-                    b"https://github.com/evq/yodel/cpace/session/unilateral",
-                    SecParam::B128,
-                );
-                transcript.ad(&session_id, false);
-                let (yodeler, handshake) =
-                    Yodeler::new(Some(transcript), rng, password, self_identity);
-                Ok((yodeler.complete(self)?, handshake))
-            }
+        let transcript = self.into_transcript();
+        if transcript.is_none() {
+            return Err(());
         }
+        let (yodeler, handshake) = Yodeler::new(transcript, rng, password, self_identity);
+        Ok((yodeler.complete(self)?, handshake))
+    }
+
+    fn into_transcript(&self) -> Option<Strobe> {
+        self.session_id.map(|session_id| {
+            let mut transcript = Strobe::new(
+                b"https://github.com/evq/yodel/cpace/session/unilateral",
+                SecParam::B128,
+            );
+            transcript.ad(&session_id, false);
+            transcript
+        })
     }
 }
 
@@ -261,9 +285,9 @@ impl Yodeler {
         transcript.ad(b"https://github.com/evq/yodel/cpace/password", false);
         transcript.key(password, false);
 
-        // after this point we will no longer use the original transcript which had the password
-        // mixed into it. this is to ensure that if a session key is leaked it provides no useful
-        // information about the password to an attacker
+        // after this point we will no longer be able to use the original transcript which had the
+        // password mixed into it. this is to ensure that if a session key is leaked it provides
+        // no useful information about the password to an attacker
         let g = transcript_into_generator(transcript);
 
         // generate a random blind (x)
@@ -271,13 +295,20 @@ impl Yodeler {
         // X = g ^ x
         let blinded_password = (g * blind).compress();
 
-        // NOTE this ensures that messages cannot be replayed between concurrent sessions
+        // NOTE the application instance id and originator id ensure
+        // that messages cannot be replayed between concurrent sessions
         // when combined with a check when we complete the handshake
+        let application_instance_id = APPLICATION_INSTANCE_ID.get_or_init(|| {
+            let mut application_instance_id = [0u8; APPLICATION_INSTANCE_ID_LENGTH];
+            rng.fill_bytes(&mut application_instance_id[..]);
+            application_instance_id
+        });
         let originator_id = derive_originator_id(self_identity);
 
         let handshake = Handshake {
             session_id,
             originator_id,
+            application_instance_id: *application_instance_id,
             blinded_password: blinded_password,
         };
         tx_transcript.send_clr(&handshake.to_bytes(), false);
@@ -288,6 +319,7 @@ impl Yodeler {
                 rx_transcript,
                 blind,
                 handshake,
+                ignore_application_instance_id: false,
             },
             handshake,
         )
@@ -296,6 +328,12 @@ impl Yodeler {
     /// Complete the handshake, resulting in duplex STROBE transcripts
     pub fn complete(mut self, handshake: Handshake) -> Result<Duplex, ()> {
         if handshake.originator_id == self.handshake.originator_id {
+            // Deny attempt to replay our own concurrent sessions
+            return Err(());
+        }
+        if !self.ignore_application_instance_id
+            && (handshake.application_instance_id == self.handshake.application_instance_id)
+        {
             // Deny attempt to replay our own concurrent sessions
             return Err(());
         }
@@ -341,8 +379,12 @@ mod tests {
         let s_a = Some(Strobe::new(b"yodeltest", SecParam::B128));
         let s_b = Some(Strobe::new(b"yodeltest", SecParam::B128));
 
-        let (yodeler_a, X) = Yodeler::new(s_a, &mut rng, "testpassword".as_bytes(), "A".as_bytes());
-        let (yodeler_b, Y) = Yodeler::new(s_b, &mut rng, "testpassword".as_bytes(), "B".as_bytes());
+        let (mut yodeler_a, X) =
+            Yodeler::new(s_a, &mut rng, "testpassword".as_bytes(), "A".as_bytes());
+        let (mut yodeler_b, Y) =
+            Yodeler::new(s_b, &mut rng, "testpassword".as_bytes(), "B".as_bytes());
+        yodeler_a.ignore_application_instance_id = true;
+        yodeler_b.ignore_application_instance_id = true;
 
         let X = Handshake::from_bytes(&X.to_bytes()).unwrap();
         let Y = Handshake::from_bytes(&Y.to_bytes()).unwrap();
@@ -376,19 +418,24 @@ mod tests {
     fn same_password_no_transcript_works() {
         let mut rng = OsRng;
 
-        let (yodeler_a, X) =
+        let (mut yodeler_a, X) =
             Yodeler::new(None, &mut rng, "testpassword".as_bytes(), "A".as_bytes());
+        yodeler_a.ignore_application_instance_id = true;
         let X = Handshake::from_bytes(&X.to_bytes()).unwrap();
 
-        let (
-            Duplex {
-                tx: mut tx_b,
-                rx: mut rx_b,
-            },
-            Y,
-        ) = X
-            .respond(&mut rng, "testpassword".as_bytes(), "B".as_bytes())
-            .unwrap();
+        // NOTE we use internal method into_transcript instead of respond so that we can
+        // ignore the application instance id
+        let (mut yodeler_b, Y) = Yodeler::new(
+            X.into_transcript(),
+            &mut rng,
+            "testpassword".as_bytes(),
+            "B".as_bytes(),
+        );
+        yodeler_b.ignore_application_instance_id = true;
+        let Duplex {
+            tx: mut tx_b,
+            rx: mut rx_b,
+        } = yodeler_b.complete(X).unwrap();
 
         let Duplex {
             tx: mut tx_a,
@@ -418,8 +465,12 @@ mod tests {
         let s_a = Some(Strobe::new(b"yodeltest", SecParam::B128));
         let s_b = Some(Strobe::new(b"yodeltest", SecParam::B128));
 
-        let (yodeler_a, X) = Yodeler::new(s_a, &mut rng, "testpassword".as_bytes(), "A".as_bytes());
-        let (yodeler_b, Y) = Yodeler::new(s_b, &mut rng, "passwordtest".as_bytes(), "B".as_bytes());
+        let (mut yodeler_a, X) =
+            Yodeler::new(s_a, &mut rng, "testpassword".as_bytes(), "A".as_bytes());
+        let (mut yodeler_b, Y) =
+            Yodeler::new(s_b, &mut rng, "passwordtest".as_bytes(), "B".as_bytes());
+        yodeler_a.ignore_application_instance_id = true;
+        yodeler_b.ignore_application_instance_id = true;
 
         let Duplex {
             tx: mut tx_a,
@@ -453,8 +504,12 @@ mod tests {
         let s_a = Some(Strobe::new(b"yodeltest", SecParam::B128));
         let s_b = Some(Strobe::new(b"fail", SecParam::B128));
 
-        let (yodeler_a, X) = Yodeler::new(s_a, &mut rng, "testpassword".as_bytes(), "A".as_bytes());
-        let (yodeler_b, Y) = Yodeler::new(s_b, &mut rng, "testpassword".as_bytes(), "B".as_bytes());
+        let (mut yodeler_a, X) =
+            Yodeler::new(s_a, &mut rng, "testpassword".as_bytes(), "A".as_bytes());
+        let (mut yodeler_b, Y) =
+            Yodeler::new(s_b, &mut rng, "testpassword".as_bytes(), "B".as_bytes());
+        yodeler_a.ignore_application_instance_id = true;
+        yodeler_b.ignore_application_instance_id = true;
 
         let Duplex {
             tx: mut tx_a,
@@ -489,8 +544,9 @@ mod tests {
 
         // A attempts to connect to B, but C replays the result
 
-        let (yodeler_a_1, X) =
+        let (mut yodeler_a_1, X) =
             Yodeler::new(s_a_1, &mut rng, "testpassword".as_bytes(), "A".as_bytes());
+        yodeler_a_1.ignore_application_instance_id = true;
 
         assert!(yodeler_a_1.complete(X).is_err());
     }
@@ -506,10 +562,12 @@ mod tests {
         // A attempts to connect to B, but C captures the result and uses it to initiate a new
         // session with A
 
-        let (yodeler_a_1, X) =
+        let (mut yodeler_a_1, X) =
             Yodeler::new(s_a_1, &mut rng, "testpassword".as_bytes(), "A".as_bytes());
-        let (yodeler_a_2, Y) =
+        let (mut yodeler_a_2, Y) =
             Yodeler::new(s_a_2, &mut rng, "testpassword".as_bytes(), "A".as_bytes());
+        yodeler_a_1.ignore_application_instance_id = true;
+        yodeler_a_2.ignore_application_instance_id = true;
 
         assert!(yodeler_a_2.complete(X).is_err());
         assert!(yodeler_a_1.complete(Y).is_err());
@@ -526,10 +584,12 @@ mod tests {
         // again A attempts to connect to B, but C captures the result,
         // this time tampering with it and using it to initiate a new session with A
 
-        let (yodeler_a_1, mut X) =
+        let (mut yodeler_a_1, mut X) =
             Yodeler::new(s_a_1, &mut rng, "testpassword".as_bytes(), "A".as_bytes());
-        let (yodeler_a_2, mut Y) =
+        let (mut yodeler_a_2, mut Y) =
             Yodeler::new(s_a_2, &mut rng, "testpassword".as_bytes(), "A".as_bytes());
+        yodeler_a_1.ignore_application_instance_id = true;
+        yodeler_a_2.ignore_application_instance_id = true;
 
         X.originator_id = derive_originator_id("B".as_bytes());
         Y.originator_id = derive_originator_id("B".as_bytes());
@@ -564,6 +624,27 @@ mod tests {
 
     #[test]
     #[allow(non_snake_case)]
+    fn weak_self_id_fails() {
+        let mut rng = OsRng;
+        let s_a_1 = Some(Strobe::new(b"yodeltest", SecParam::B128));
+        let s_a_2 = s_a_1.clone();
+
+        // A attempts to connect to B, but C captures the result and uses it to initiate a new
+        // session with A. A's identity is reassigned by an attacker between sessions
+
+        let (yodeler_a_1, X) =
+            Yodeler::new(s_a_1, &mut rng, "testpassword".as_bytes(), "A".as_bytes());
+        let (yodeler_a_2, Y) =
+            Yodeler::new(s_a_2, &mut rng, "testpassword".as_bytes(), "A'".as_bytes());
+
+        // NOTE here we've left the application instance id protections in place
+
+        assert!(yodeler_a_2.complete(X).is_err());
+        assert!(yodeler_a_1.complete(Y).is_err());
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
     fn session_id_agreement_works() {
         let mut rng = OsRng;
 
@@ -573,18 +654,20 @@ mod tests {
         let s_a_bytes = s_a.to_bytes();
         let s_b_bytes = s_b.to_bytes();
 
-        let (yodeler_a, X) = Yodeler::new(
+        let (mut yodeler_a, X) = Yodeler::new(
             Some(s_a.complete(None, SessionHandshake::from_bytes(&s_b_bytes).unwrap())),
             &mut rng,
             "testpassword".as_bytes(),
             "A".as_bytes(),
         );
-        let (yodeler_b, Y) = Yodeler::new(
+        let (mut yodeler_b, Y) = Yodeler::new(
             Some(s_b.complete(None, SessionHandshake::from_bytes(&s_a_bytes).unwrap())),
             &mut rng,
             "testpassword".as_bytes(),
             "B".as_bytes(),
         );
+        yodeler_a.ignore_application_instance_id = true;
+        yodeler_b.ignore_application_instance_id = true;
 
         let Duplex {
             tx: mut tx_a,
