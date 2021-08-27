@@ -480,6 +480,21 @@ mod tests {
 
     #[test]
     #[allow(non_snake_case)]
+    fn self_fails() {
+        let mut rng = OsRng;
+
+        let s_a_1 = Some(Strobe::new(b"yodeltest", SecParam::B128));
+
+        // A attempts to connect to B, but C replays the result
+
+        let (yodeler_a_1, X) =
+            Yodeler::new(s_a_1, &mut rng, "testpassword".as_bytes(), "A".as_bytes());
+
+        assert!(yodeler_a_1.complete(X).is_err());
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
     fn same_originator_id_fails() {
         let mut rng = OsRng;
 
