@@ -55,15 +55,3 @@ with the same password.  An approach in this vein has been suggested as
 a way of increasing resistance to side channel attacks; similar to
 suggested mitigations for [power supply analysis attacks that have broken
 certain implementations of EdDSA signing.](https://eprint.iacr.org/2017/985.pdf)
-
-# Examples
-
-```
-use rand::rngs::OsRng;
-use strobe_rs::{SecParam, Strobe};
-use yodel;
-
-let mut rng = OsRng::new().unwrap();
-let (yodeler, X) = yodel::Yodeler::new(Strobe::new(b"yodeltest".to_vec(), SecParam::B128), &mut rng, "testpassword".as_bytes());
-let yodel::Duplex { tx, rx } = yodeler.complete(X).unwrap();
-```
