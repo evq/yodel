@@ -18,9 +18,18 @@ on all prior inputs to mitigate issues with the original SPEKE specification.
 The strategy for these mitigations stems from the paper
 [Analysing and Patching SPEKE in ISO/IEC.](https://arxiv.org/pdf/1802.04900.pdf)
 
+Later modifications attempt to align strongly with [CPACE](https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-cpace), another balanced PAKE protocol based on SPEKE.
+
+# Notes
+
 A yodel handshake results in full-duplex STROBE construction, with distinct TX and RX
 transcripts. The two parties participating in the handshake will share these
 common secret transcripts and can therefore form an encrypted channel for communicating.
+
+The duplex transcripts combined with a required binding of self determined user identity to
+the transcript neatly prevents the issue of message replay within and across concurrent
+sessions without breaking protocol symmetry, even in misuse scenarios where
+a session id is not passed in the initiating transcript or it's uniqueness is not enforced.
 
 # Use
 
@@ -30,10 +39,11 @@ I'm not a cryptographer, this code has not been audited in any capacity.
 
 # TODO
 
-The current STROBE library used requires passing vecs, which means this library
+The current upstream STROBE library used requires passing vecs, which means this library
 isn't ideal for use in a `no_std` environment without alloc. This library is
 intended to be fully `no_std` compatible so that embedded devices can take
-advantage of the STROBE based construction.
+advantage of the STROBE based construction. As a result this relies on a fork
+which has not yet been upstreamed.
 
 The session identifier type should be tweaked.
 
