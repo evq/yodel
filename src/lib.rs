@@ -16,14 +16,23 @@ use strobe_rs::{SecParam, Strobe};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-const APPLICATION_INSTANCE_ID_LENGTH: usize = 32;
-const ORIGINATOR_ID_LENGTH: usize = 32;
-const SESSION_ID_LENGTH: usize = 32;
+const BLINDED_POINT_LENGTH: usize = 32;
+const ID_HASH_LENGTHS: usize = 32;
+
+const APPLICATION_INSTANCE_ID_LENGTH: usize = ID_HASH_LENGTHS;
+const ORIGINATOR_ID_LENGTH: usize = ID_HASH_LENGTHS;
+const SESSION_ID_LENGTH: usize = ID_HASH_LENGTHS;
 const SESSION_HANDSHAKE_LENGTH: usize = SESSION_ID_LENGTH;
+const HANDSHAKE_LENGTH: usize = SESSION_ID_LENGTH
+    + ORIGINATOR_ID_LENGTH
+    + APPLICATION_INSTANCE_ID_LENGTH
+    + BLINDED_POINT_LENGTH;
 
 static APPLICATION_INSTANCE_ID: OnceCell<[u8; APPLICATION_INSTANCE_ID_LENGTH]> = OnceCell::new();
 
 /// The SessionHandshake sub-protocol is used to arrive at a shared session id
+///
+/// This sub-protocol is OPTIONAL though it may add additional side channel resistance.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct SessionHandshake {
@@ -117,9 +126,6 @@ pub struct Duplex {
     pub rx: Strobe,
 }
 
-const HANDSHAKE_LENGTH: usize =
-    SESSION_ID_LENGTH + ORIGINATOR_ID_LENGTH + APPLICATION_INSTANCE_ID_LENGTH + 32;
-
 impl Handshake {
     /// Convert the handshake to bytes
     pub fn to_bytes(&self) -> [u8; HANDSHAKE_LENGTH] {
@@ -156,7 +162,7 @@ impl Handshake {
                 ..SESSION_ID_LENGTH + ORIGINATOR_ID_LENGTH + APPLICATION_INSTANCE_ID_LENGTH],
         );
 
-        let mut bits: [u8; 32] = [0u8; 32];
+        let mut bits: [u8; BLINDED_POINT_LENGTH] = [0u8; BLINDED_POINT_LENGTH];
         bits.copy_from_slice(
             &bytes[SESSION_ID_LENGTH + ORIGINATOR_ID_LENGTH + APPLICATION_INSTANCE_ID_LENGTH..],
         );
@@ -237,18 +243,20 @@ fn derive_originator_id(self_identity: &[u8]) -> [u8; ORIGINATOR_ID_LENGTH] {
 impl Yodeler {
     /// Create a new Yodeler
     ///
-    /// The session transcript SHOULD include a session identifier
-    /// (ensured to be distinct from any concurrent sessions by the application),
+    /// If provided the session transcript SHOULD include a session identifier,
     /// an encoding of the known user idenities ( including network ids such as IP/port,
     /// MAC address, etc ) and any other additional data that the parties wish to authenticate.
+    /// The session identifier SHOULD be distinct from any concurrent sessions by the application,
+    /// and is RECOMMENDED to be a unique, mutually generated, strongly random value so that reuse can not be forced.
     ///
     /// If a transcript is not provided, one will be created and a random
-    /// session id will be chosen and bound. In this case, the other user must use the
+    /// session id will be chosen and bound. In this case, the other user MUST use the
     /// Handshake.respond method as the symmetry of the protocol has been broken.
     ///
-    /// NOTE that it's critical the identity passed is self determined and does NOT change
+    /// The identity passed SHOULD be self determined and SHOULD NOT change
     /// while there are active sessions. Use of an identity which is assigned outside of your control
-    /// may lead to impersonation attacks in contexts that allow concurrent sessions
+    /// may lead to impersonation attacks in contexts that allow concurrent sessions though
+    /// attempts have been made to mitigate this possibility.
     pub fn new<T>(
         session_transcript: Option<Strobe>,
         rng: &mut T,
